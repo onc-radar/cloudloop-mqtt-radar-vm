@@ -1,12 +1,9 @@
 name: 'Mirror Repo'
 
 on:
-  push:
-    branches: 
-      - __mirror
   schedule:
     - cron: '*/5 * * * *'
-  workflow_dispatch:
+  workflow_dispatch: 
 
 jobs:
   mirror:
