@@ -1,6 +1,6 @@
 name: 'Mirror Repo'
 on:
-  push:
+#  push:
     branches: [__mirror]
   schedule:
     - cron: '*/5 * * * *'   # Run 
