@@ -1,9 +1,11 @@
 name: 'Mirror Repo'
+
 on:
-#  push:
- #   branches: [__mirror]
+  push:
+    branches: 
+      - __mirror
   schedule:
-    - cron: '*/5 * * * *'   # Run 
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -13,6 +15,5 @@ jobs:
       - uses: bridgelightcloud/github-mirror-action@v3
         with:
           origin: 'https://github.com/rkeyoceannetworks/cloudloop-mqtt'
-          #exclude: '.github/workflows/**'
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
