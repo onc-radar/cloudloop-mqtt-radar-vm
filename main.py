@@ -60,7 +60,6 @@ def save_to_db(cl_id, topic, momsn, decoded_text, file_path, lat, lon, raw_json,
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
-        # Convert the parsed dictionary to a JSON string for SQLite storage
         parsed_json_str = json.dumps(parsed_data) if parsed_data else None
 
         cursor.execute('''
@@ -78,10 +77,7 @@ def save_to_db(cl_id, topic, momsn, decoded_text, file_path, lat, lon, raw_json,
 
 # --- Sensor Parsing Logic ---
 def parse_sensor_data(file_path):
-    """
-    Reads an extracted text file and attempts to parse it into structured data.
-    Modify the logic inside here to match your specific hardware's payload format.
-    """
+    """Reads an extracted text file and attempts to parse it into structured data."""
     parsed_dict = {}
     try:
         with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -95,7 +91,7 @@ def parse_sensor_data(file_path):
                 try:
                     return json.loads(content)
                 except json.JSONDecodeError:
-                    pass # Fall through to custom parsing
+                    pass
             
             # 2. Attempt Key-Value or CSV parsing
             lines = content.split('\n')
@@ -104,7 +100,6 @@ def parse_sensor_data(file_path):
                 if not line:
                     continue
                 
-                # Example: "Temperature: 25.4" or "Temp=25.4"
                 if ':' in line:
                     parts = line.split(':', 1)
                     parsed_dict[parts[0].strip()] = parts[1].strip()
@@ -113,7 +108,6 @@ def parse_sensor_data(file_path):
                     parsed_dict[parts[0].strip()] = parts[1].strip()
                 elif ',' in line:
                     parts = line.split(',', 1)
-                    # For basic CSV, we just create generic keys if there is no header
                     parsed_dict[f"column_{i}"] = parts[1].strip()
                 else:
                     parsed_dict[f"line_{i}"] = line
@@ -138,20 +132,32 @@ def on_message(client, userdata, msg):
         cl_id = data.get("id")
         b64_msg = data.get("message", "")
         
-        if not cl_id or not b64_msg: return
+        if not cl_id or not b64_msg: 
+            return
 
         raw_bytes = base64.b64decode(b64_msg)
-        sbd = data.get("sbd", {})
-        momsn = sbd.get("momsn")
-        loc = sbd.get("location", {})
         
+        # --- Metadata Extraction (Supports Certus IMT and Traditional SBD) ---
+        imt_data = data.get("imt", {})
+        sbd_data = data.get("sbd", {})
+
+        momsn = imt_data.get("messageId") or sbd_data.get("momsn")
+        
+        lat = imt_data.get("latitude")
+        lon = imt_data.get("longitude")
+        
+        if lat is None and lon is None:
+            loc = sbd_data.get("location", {})
+            lat = loc.get("latitude")
+            lon = loc.get("longitude")
+        # ---------------------------------------------------------------------
+
         file_path = None
         decoded_text = ""
         parsed_telemetry = None
 
         # --- Binary & GZIP Handling ---
         try:
-            # Check for GZIP Magic Bytes: \x1f\x8b
             if raw_bytes.startswith(b'\x1f\x8b'):
                 gz_filename = f"msg_{cl_id}.gz"
                 file_path = os.path.join(DOWNLOAD_DIR, gz_filename)
@@ -160,30 +166,25 @@ def on_message(client, userdata, msg):
                     with open(file_path, "wb") as f:
                         f.write(raw_bytes)
                 
-                # Extraction
                 extracted_path = file_path.replace(".gz", ".txt")
                 try:
                     with gzip.open(file_path, 'rb') as f_in:
                         with open(extracted_path, 'wb') as f_out:
                             shutil.copyfileobj(f_in, f_out)
                     
-                    # Read preview
                     with open(extracted_path, 'r', errors='replace') as f_view:
                         preview = f_view.read(50).strip()
                     decoded_text = f"[GZIP EXTRACTED] Preview: {preview}..."
                     
-                    # RUN PARSER ON EXTRACTED DATA
                     parsed_telemetry = parse_sensor_data(extracted_path)
                     
                 except Exception as e:
                     decoded_text = f"[GZIP ERROR: {e}]"
             
             else:
-                # Regular UTF-8 Text
                 decoded_text = raw_bytes.decode('utf-8')
 
         except UnicodeDecodeError:
-            # General Binary (Non-GZIP)
             filename = f"msg_{cl_id}.bin"
             file_path = os.path.join(DOWNLOAD_DIR, filename)
             if not os.path.exists(file_path):
@@ -193,7 +194,7 @@ def on_message(client, userdata, msg):
 
         # Persistence
         if save_to_db(cl_id, msg.topic, momsn, decoded_text, file_path, 
-                      loc.get("latitude"), loc.get("longitude"), data, parsed_telemetry):
+                      lat, lon, data, parsed_telemetry):
             print(f"\n📩 NEW [{momsn}]: {decoded_text}")
             if parsed_telemetry:
                 print(f"📊 Parsed Data: {parsed_telemetry}")
@@ -239,5 +240,7 @@ if __name__ == "__main__":
             time.sleep(0.5)
     except KeyboardInterrupt: pass
     finally:
+        print("\n🛑 Shutting down...")
         client.loop_stop()
         client.disconnect()
+
