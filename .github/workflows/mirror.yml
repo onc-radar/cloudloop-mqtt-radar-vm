@@ -1,7 +1,7 @@
 name: 'Mirror Repo'
 on:
 #  push:
-    branches: [__mirror]
+ #   branches: [__mirror]
   schedule:
     - cron: '*/5 * * * *'   # Run 
   workflow_dispatch:
