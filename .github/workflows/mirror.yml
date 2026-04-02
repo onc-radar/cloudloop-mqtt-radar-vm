@@ -3,7 +3,7 @@ on:
   push:
     branches: [__mirror]
   schedule:
-    - cron: '0 * * * *'   # Run 
+    - cron: '*/5 * * * *'   # Run 
   workflow_dispatch:
 
 jobs:
