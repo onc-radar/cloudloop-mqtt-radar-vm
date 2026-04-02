@@ -4,3 +4,4 @@ new line to try again had error so added this to the other account
 - name: Mark workspace safe for git
   run: git config --global --add safe.directory /github/workspace
 
+edit agian, needed to add write permissions to a new toen etc
