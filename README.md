@@ -1,3 +1,5 @@
+# WARNIGN this is not the main branch this is just some old files and the important auto sync scripts dont use these files
+
 # Cloudloop Iridium MQTT Bridge
 
 A professional Python-based interface for interacting with the Cloudloop MQTT Broker. This tool enables bi-directional communication with remote Iridium satellite devices (RockBLOCK, RockREMOTE, etc.) using authenticated TLS 1.2 connections.
