@@ -4,18 +4,19 @@ import base64
 import ssl
 import time
 import sqlite3
+from datetime import datetime
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 
-# 1. Load Environment Variables
+# --- Setup ---
 load_dotenv()
-
-# --- Configuration ---
 BROKER_HOST = "mqtt.cloudloop.com"
 BROKER_PORT = 8883
 DB_FILE = "cloudloop_messages.db"
+DOWNLOAD_DIR = "downloads"
 
+# Credentials from .env
 ACCOUNT_ID = os.getenv("CL_ACCOUNT_ID")
 THING_ID = os.getenv("CL_THING_ID")
 CA_CERT = os.getenv("CERT_CA")
@@ -26,9 +27,8 @@ PRIVATE_KEY = os.getenv("CERT_KEY")
 TOPIC_MO = f"lingo/{ACCOUNT_ID}/{THING_ID}/MO"
 TOPIC_MT = f"lingo/{ACCOUNT_ID}/{THING_ID}/MT"
 
-# --- Database Logic ---
+# --- Database & File Logic ---
 def init_db():
-    """Initializes the SQLite database."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -39,117 +39,103 @@ def init_db():
             device_id TEXT,
             raw_json TEXT,
             decoded_text TEXT,
+            file_path TEXT,
             latitude REAL,
             longitude REAL
         )
     ''')
     conn.commit()
     conn.close()
+    if not os.path.exists(DOWNLOAD_DIR):
+        os.makedirs(DOWNLOAD_DIR)
 
-def save_to_db(topic, raw_json, decoded_text, lat=None, lon=None):
-    """Inserts received data into the database."""
+def save_to_db(topic, raw_json, decoded_text, file_path=None, lat=None, lon=None):
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO messages (topic, device_id, raw_json, decoded_text, latitude, longitude)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (topic, THING_ID, json.dumps(raw_json), decoded_text, lat, lon))
+            INSERT INTO messages (topic, device_id, raw_json, decoded_text, file_path, latitude, longitude)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (topic, THING_ID, json.dumps(raw_json), decoded_text, file_path, lat, lon))
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"❌ Database Error: {e}")
-
-# --- Sending Logic ---
-def send_device_message(client, text):
-    """Encodes and publishes a message TO the Iridium device."""
-    try:
-        # Base64 encode for Cloudloop requirement
-        encoded_payload = base64.b64encode(text.encode('utf-8')).decode('utf-8')
-        payload = {"message": encoded_payload}
-        
-        result = client.publish(TOPIC_MT, json.dumps(payload))
-        
-        if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            print(f"📤 Successfully queued MT message: '{text}'")
-        else:
-            print(f"❌ Failed to publish MT message. Error code: {result.rc}")
-    except Exception as e:
-        print(f"⚠️ Error sending message: {e}")
+        print(f"❌ DB Error: {e}")
 
 # --- MQTT Callbacks ---
-def on_connect(client, userdata, flags, rc, properties=None):
-    if rc == 0:
-        print(f"✅ Connected to Cloudloop Broker")
-        client.subscribe(TOPIC_MO)
-        print(f"📡 Subscribed to MO: {TOPIC_MO}")
-        print("🚀 Ready! Type a message and press Enter to send. Type 'q' to quit.")
-    else:
-        print(f"❌ Connection failed with code {rc}")
-
 def on_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode('utf-8'))
         b64_message = data.get("message", "")
-        decoded_text = ""
-        
-        if b64_message:
-            # We use errors='replace' so it doesn't crash on binary data
-            decoded_text = base64.b64decode(b64_message).decode('utf-8', errors='replace')
-            print(f"\n📩 Incoming Message: {decoded_text}")
-        
-        # Extract metadata
-        sbd_data = data.get("sbd", {})
-        loc = sbd_data.get("location", {})
-        lat = loc.get("latitude")
-        lon = loc.get("longitude")
+        if not b64_message:
+            return
 
-        # Save to DB
-        save_to_db(msg.topic, data, decoded_text, lat, lon)
-        print(f"💾 Message saved to database.")
+        raw_bytes = base64.b64decode(b64_message)
+        file_path = None
+        decoded_text = ""
+
+        # Logic to determine if it's binary or text
+        # 1. Check for GZIP header (0x1f 0x8b) or if it's not valid UTF-8
+        try:
+            decoded_text = raw_bytes.decode('utf-8')
+            print(f"\n📩 Text Message: {decoded_text}")
+        except UnicodeDecodeError:
+            # It's binary! Let's save it.
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"rx_{timestamp}.bin"
+            
+            # Try to guess extension from content (optional)
+            if raw_bytes.startswith(b'\x1f\x8b'):
+                filename = f"rx_{timestamp}.gz"
+            
+            file_path = os.path.join(DOWNLOAD_DIR, filename)
+            with open(file_path, "wb") as f:
+                f.write(raw_bytes)
+            
+            decoded_text = f"[BINARY DATA SAVED TO {filename}]"
+            print(f"\n📦 Binary received and saved to: {file_path}")
+
+        # Metadata
+        sbd = data.get("sbd", {})
+        loc = sbd.get("location", {})
+        
+        save_to_db(msg.topic, data, decoded_text, file_path, loc.get("latitude"), loc.get("longitude"))
 
     except Exception as e:
-        print(f"⚠️ Error processing incoming message: {e}")
+        print(f"⚠️ Error: {e}")
 
-# --- Main Execution ---
+# --- Standard MQTT Boilerplate ---
+def on_connect(client, userdata, flags, rc, properties=None):
+    if rc == 0:
+        print(f"✅ Connected. Subscribed to {TOPIC_MO}")
+        client.subscribe(TOPIC_MO)
+        print("Type a message to send, or 'q' to quit.")
+    else:
+        print(f"❌ Auth failed: {rc}")
+
+def send_device_message(client, text):
+    payload = {"message": base64.b64encode(text.encode('utf-8')).decode('utf-8')}
+    client.publish(TOPIC_MT, json.dumps(payload))
+    print(f"📤 Queued: {text}")
+
+# --- Execution ---
 if __name__ == "__main__":
-    # Check config
-    if not all([ACCOUNT_ID, THING_ID, CA_CERT, CLIENT_CERT, PRIVATE_KEY]):
-        print("❌ Error: Missing configuration in .env")
-        exit(1)
-
     init_db()
-
     client = mqtt.Client(CallbackAPIVersion.VERSION2)
-    client.tls_set(
-        ca_certs=CA_CERT,
-        certfile=CLIENT_CERT,
-        keyfile=PRIVATE_KEY,
-        cert_reqs=ssl.CERT_REQUIRED,
-        tls_version=ssl.PROTOCOL_TLSv1_2
-    )
-
+    client.tls_set(ca_certs=CA_CERT, certfile=CLIENT_CERT, keyfile=PRIVATE_KEY,
+                   cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLSv1_2)
     client.on_connect = on_connect
     client.on_message = on_message
-
-    print(f"🔄 Connecting to {BROKER_HOST}...")
     client.connect(BROKER_HOST, BROKER_PORT, 60)
-    
-    # Start background networking
     client.loop_start()
 
     try:
         while True:
-            # The interactive prompt
-            val = input("\n> ")
-            if val.lower() == 'q':
-                break
-            if val:
-                send_device_message(client, val)
+            val = input("> ")
+            if val.lower() == 'q': break
+            if val: send_device_message(client, val)
             time.sleep(0.5)
-    except KeyboardInterrupt:
-        pass
+    except KeyboardInterrupt: pass
     finally:
-        print("\n🛑 Shutting down...")
         client.loop_stop()
         client.disconnect()
